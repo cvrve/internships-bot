@@ -13,7 +13,7 @@ REPO_URL = 'https://github.com/Ouckah/Summer2025-Internships'
 LOCAL_REPO_PATH = 'Summer2025-Internships'
 JSON_FILE_PATH = os.path.join(LOCAL_REPO_PATH, '.github', 'scripts', 'listings.json')
 DISCORD_TOKEN = '' #! Your Discord token
-CHANNEL_ID = '' #! Your channel ID
+CHANNEL_IDS = '' #! Your channel IDs
 
 # Initialize Discord bot
 intents = discord.Intents.default()
@@ -85,11 +85,35 @@ def format_message(role):
 made by the team @ [{cvrve}](https://www.cvrve.me/)
 """
 
+# Function to compare roles and identify changes
+def compare_roles(old_role, new_role):
+    """
+    The function `compare_roles` compares two dictionaries representing roles and returns a list of
+    changes between them.
+    
+    :param old_role: I see that you have provided the function `compare_roles` which takes in two
+    parameters `old_role` and `new_role`. However, you have not provided the details or structure of the
+    `old_role` parameter. Could you please provide the details or structure of the `old_role` parameter
+    so
+    :param new_role: I see that you have defined a function `compare_roles` that takes in two parameters
+    `old_role` and `new_role`. The function compares the values of each key in the `new_role` dictionary
+    with the corresponding key in the `old_role` dictionary. If the values are different, it
+    :return: The `compare_roles` function returns a list of strings that represent the changes between
+    the `old_role` and `new_role` dictionaries. Each string in the list indicates a key that has changed
+    from its value in `old_role` to its value in `new_role`.
+    """
+    changes = []
+    for key in new_role:
+        if old_role.get(key) != new_role.get(key):
+            changes.append(f"{key} changed from {old_role.get(key)} to {new_role.get(key)}")
+    return changes
+
 # Function to check for new roles
 def check_for_new_roles():
     """
-    The function `check_for_new_roles` checks for new roles, compares them with previous data, and sends
-    messages for new visible and active roles.
+    The function `check_for_new_roles` compares new roles with previous data, updates the data, and
+    sends messages for new roles for every channel id in the `CHANNEL_IDS` list.
+    The function also checks for roles that were previously active but are now inactive.
     """
     print("Checking for new roles...")
     clone_or_update_repo()
@@ -116,10 +140,26 @@ def check_for_new_roles():
         for role in new_roles:
             if role['is_visible'] and role['active']:
                 message = format_message(role)
-                for channel_id in CHANNEL_ID:
+                for channel_id in CHANNEL_IDS:
                     bot.loop.create_task(send_message(message, channel_id))
                 print(f"New role posted: {role['title']}")
+            elif role['is_visible'] and not role['active']:
+                print(f"Role {role['title']} is no longer active.")
     else:
+        # Check for roles that were previously active but are now inactive
+        for old_role in old_data:
+            if old_role['is_visible'] and old_role['active']:
+                corresponding_new_role = next((role for role in new_data if role['title'] == old_role['title']), None)
+                if corresponding_new_role:
+                    if not corresponding_new_role['active']:
+                        print(f"Role {old_role['title']} is now inactive and will not be posted.")
+                    else:
+                        changes = compare_roles(old_role, corresponding_new_role)
+                        if changes:
+                            print(f"Role {old_role['title']} has updates:")
+                            for change in changes:
+                                print(f"  - {change}")
+        
         print("No new roles found.")
 
 # Function to send message to Discord
