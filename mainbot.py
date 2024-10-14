@@ -9,7 +9,7 @@ from discord.ext import tasks, commands
 import asyncio
 
 # Constants
-REPO_URL = 'https://github.com/Ouckah/Summer2025-Internships'
+REPO_URL = 'https://github.com/cvrve/Summer2025-Internships'
 LOCAL_REPO_PATH = 'Summer2025-Internships'
 JSON_FILE_PATH = os.path.join(LOCAL_REPO_PATH, '.github', 'scripts', 'listings.json')
 DISCORD_TOKEN = '' #! Your Discord token
@@ -108,12 +108,36 @@ def compare_roles(old_role, new_role):
             changes.append(f"{key} changed from {old_role.get(key)} to {new_role.get(key)}")
     return changes
 
+
+def format_deactivation_message(role):
+    """
+    The function `format_deactivation_message` generates a message indicating that a specific internship
+    role is no longer active, including details such as the role title, status, deactivation date, and
+    company name.
+    
+    :param role: The `format_deactivation_message` function takes a `role` dictionary as a parameter.
+    The `role` dictionary should contain the following keys:
+    :return: The function `format_deactivation_message` returns a formatted deactivation message for a
+    given role. The message includes details such as the company name, role title, status, deactivation
+    date, and a reference to the team at cvrve.
+    """
+    cvrve = 'cvrve'
+    return f"""
+>>> # {role['company_name']} internship is no longer active
+
+### Role:
+[{role['title']}]({role['url']})
+
+### Status: `Inactive`
+### Deactivated on: {datetime.now().strftime('%B, %d')}
+made by the team @ [{cvrve}](https://www.cvrve.me/)
+"""
+
 # Function to check for new roles
 def check_for_new_roles():
     """
-    The function `check_for_new_roles` compares new roles with previous data, updates the data, and
-    sends messages for new roles for every channel id in the `CHANNEL_IDS` list.
-    The function also checks for roles that were previously active but are now inactive.
+    The function `check_for_new_roles` compares new data with previous data to identify new roles and
+    deactivated roles, sending messages to specified channels accordingly.
     """
     print("Checking for new roles...")
     clone_or_update_repo()
@@ -129,38 +153,43 @@ def check_for_new_roles():
         old_data = []
         print("No previous data found.")
 
-    new_roles = [role for role in new_data if role not in old_data]
-    
-    if new_roles:
-        print(f"Found {len(new_roles)} new roles.")
-        with open('previous_data.json', 'w') as file:
-            json.dump(new_data, file)
-        print("Updated previous data with new data.")
+    new_roles = []
+    deactivated_roles = []
 
-        for role in new_roles:
-            if role['is_visible'] and role['active']:
-                message = format_message(role)
-                for channel_id in CHANNEL_IDS:
-                    bot.loop.create_task(send_message(message, channel_id))
-                print(f"New role posted: {role['title']}")
-            elif role['is_visible'] and not role['active']:
-                print(f"Role {role['title']} is no longer active.")
-    else:
-        # Check for roles that were previously active but are now inactive
-        for old_role in old_data:
-            if old_role['is_visible'] and old_role['active']:
-                corresponding_new_role = next((role for role in new_data if role['title'] == old_role['title']), None)
-                if corresponding_new_role:
-                    if not corresponding_new_role['active']:
-                        print(f"Role {old_role['title']} is now inactive and will not be posted.")
-                    else:
-                        changes = compare_roles(old_role, corresponding_new_role)
-                        if changes:
-                            print(f"Role {old_role['title']} has updates:")
-                            for change in changes:
-                                print(f"  - {change}")
+    # Create a dictionary for quick lookup of old roles
+    old_roles_dict = {(role['title'], role['company_name']): role for role in old_data}
+
+    for new_role in new_data:
+        old_role = old_roles_dict.get((new_role['title'], new_role['company_name']))
         
-        print("No new roles found.")
+        if old_role:
+            # Check if the role was previously active and is now inactive
+            if old_role['active'] and not new_role['active']:
+                deactivated_roles.append(new_role)
+                print(f"Role {new_role['title']} at {new_role['company_name']} is now inactive.")
+        elif new_role['is_visible'] and new_role['active']:
+            new_roles.append(new_role)
+            print(f"New role found: {new_role['title']} at {new_role['company_name']}")
+
+    # Handle new roles
+    for role in new_roles:
+        message = format_message(role)
+        for channel_id in CHANNEL_IDS:
+            bot.loop.create_task(send_message(message, channel_id))
+
+    # Handle deactivated roles
+    for role in deactivated_roles:
+        message = format_deactivation_message(role)
+        for channel_id in CHANNEL_IDS:
+            bot.loop.create_task(send_message(message, channel_id))
+
+    # Update previous data
+    with open('previous_data.json', 'w') as file:
+        json.dump(new_data, file)
+    print("Updated previous data with new data.")
+
+    if not new_roles and not deactivated_roles:
+        print("No updates found.")
 
 # Function to send message to Discord
 async def send_message(message, channel_id):
