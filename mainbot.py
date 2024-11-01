@@ -14,12 +14,14 @@ LOCAL_REPO_PATH = 'Summer2025-Internships'
 JSON_FILE_PATH = os.path.join(LOCAL_REPO_PATH, '.github', 'scripts', 'listings.json')
 DISCORD_TOKEN = '' #! Your Discord token
 CHANNEL_IDS = '' #! Your channel IDs
+MAX_RETRIES = 3  # Maximum number of retries for failed channels
 
-# Initialize Discord bot
+# Initialize Discord bot and global variables
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
+failed_channels = set()  # Keep track of channels that have failed
+channel_failure_counts = {}  # Track failure counts for each channel
 
-# Function to clone or update the repository
 def clone_or_update_repo():
     """
     The function `clone_or_update_repo` clones a repository if it doesn't exist locally or updates it if
@@ -39,7 +41,6 @@ def clone_or_update_repo():
         git.Repo.clone_from(REPO_URL, LOCAL_REPO_PATH)
         print("Repository cloned fresh.")
 
-# Function to read JSON file
 def read_json():
     """
     The function `read_json()` reads a JSON file and returns the loaded data.
@@ -57,15 +58,9 @@ def format_message(role):
     The `format_message` function generates a formatted message for a new internship posting, including
     details such as company name, role title, location, season, sponsorship, and posting date.
     
-    :param role: The `format_message` function takes a dictionary `role` as input and generates a
-    formatted message containing information about a job role or internship. The function uses the
-    values from the `role` dictionary to fill in the template and create the message
-    :return: The `format_message` function returns a formatted message containing information about a
-    job role. The message includes details such as the company name, job title, job URL, locations,
-    season, sponsorship, and the date the job was posted. The message also includes a footer with a
-    reference to the team at cvrve.me.
+    :param role: The role dictionary containing internship information
+    :return: A formatted message string for Discord
     """
-
     cvrve = 'cvrve'
     location_str = ', '.join(role['locations']) if role['locations'] else 'Not specified'
     return f"""
@@ -85,41 +80,13 @@ def format_message(role):
 made by the team @ [{cvrve}](https://www.cvrve.me/)
 """
 
-# Function to compare roles and identify changes
-def compare_roles(old_role, new_role):
-    """
-    The function `compare_roles` compares two dictionaries representing roles and returns a list of
-    changes between them.
-    
-    :param old_role: I see that you have provided the function `compare_roles` which takes in two
-    parameters `old_role` and `new_role`. However, you have not provided the details or structure of the
-    `old_role` parameter. Could you please provide the details or structure of the `old_role` parameter
-    so
-    :param new_role: I see that you have defined a function `compare_roles` that takes in two parameters
-    `old_role` and `new_role`. The function compares the values of each key in the `new_role` dictionary
-    with the corresponding key in the `old_role` dictionary. If the values are different, it
-    :return: The `compare_roles` function returns a list of strings that represent the changes between
-    the `old_role` and `new_role` dictionaries. Each string in the list indicates a key that has changed
-    from its value in `old_role` to its value in `new_role`.
-    """
-    changes = []
-    for key in new_role:
-        if old_role.get(key) != new_role.get(key):
-            changes.append(f"{key} changed from {old_role.get(key)} to {new_role.get(key)}")
-    return changes
-
-
 def format_deactivation_message(role):
     """
     The function `format_deactivation_message` generates a message indicating that a specific internship
-    role is no longer active, including details such as the role title, status, deactivation date, and
-    company name.
+    role is no longer active.
     
-    :param role: The `format_deactivation_message` function takes a `role` dictionary as a parameter.
-    The `role` dictionary should contain the following keys:
-    :return: The function `format_deactivation_message` returns a formatted deactivation message for a
-    given role. The message includes details such as the company name, role title, status, deactivation
-    date, and a reference to the team at cvrve.
+    :param role: The role dictionary containing internship information
+    :return: A formatted deactivation message string for Discord
     """
     cvrve = 'cvrve'
     return f"""
@@ -133,11 +100,92 @@ def format_deactivation_message(role):
 made by the team @ [{cvrve}](https://www.cvrve.me/)
 """
 
-# Function to check for new roles
+def compare_roles(old_role, new_role):
+    """
+    The function `compare_roles` compares two dictionaries representing roles and returns a list of
+    changes between them.
+    
+    :param old_role: The original role dictionary
+    :param new_role: The updated role dictionary
+    :return: List of changes between the roles
+    """
+    changes = []
+    for key in new_role:
+        if old_role.get(key) != new_role.get(key):
+            changes.append(f"{key} changed from {old_role.get(key)} to {new_role.get(key)}")
+    return changes
+
+async def send_message(message, channel_id):
+    """
+    The function sends a message to a Discord channel with error handling and retry mechanism.
+    
+    :param message: The message content to send
+    :param channel_id: The Discord channel ID
+    :return: None
+    """
+    if channel_id in failed_channels:
+        print(f"Skipping previously failed channel ID {channel_id}")
+        return
+
+    try:
+        print(f"Sending message to channel ID {channel_id}...")
+        channel = bot.get_channel(int(channel_id))
+        
+        if channel is None:
+            print(f"Channel {channel_id} not in cache, attempting to fetch...")
+            try:
+                channel = await bot.fetch_channel(int(channel_id))
+            except discord.NotFound:
+                print(f"Channel {channel_id} not found")
+                channel_failure_counts[channel_id] = channel_failure_counts.get(channel_id, 0) + 1
+                if channel_failure_counts[channel_id] >= MAX_RETRIES:
+                    failed_channels.add(channel_id)
+                return
+            except discord.Forbidden:
+                print(f"No permission for channel {channel_id}")
+                failed_channels.add(channel_id)  # Immediate blacklist on permission issues
+                return
+            except Exception as e:
+                print(f"Error fetching channel {channel_id}: {e}")
+                channel_failure_counts[channel_id] = channel_failure_counts.get(channel_id, 0) + 1
+                if channel_failure_counts[channel_id] >= MAX_RETRIES:
+                    failed_channels.add(channel_id)
+                return
+
+        await channel.send(message)
+        print(f"Successfully sent message to channel {channel_id}")
+        
+        # Reset failure count on success
+        if channel_id in channel_failure_counts:
+            del channel_failure_counts[channel_id]
+        
+        await asyncio.sleep(2)  # Rate limiting delay
+        
+    except Exception as e:
+        print(f"Error sending message to channel {channel_id}: {e}")
+        channel_failure_counts[channel_id] = channel_failure_counts.get(channel_id, 0) + 1
+        if channel_failure_counts[channel_id] >= MAX_RETRIES:
+            print(f"Channel {channel_id} has failed {MAX_RETRIES} times, adding to failed channels")
+            failed_channels.add(channel_id)
+
+async def send_messages_to_channels(message):
+    """
+    Sends a message to multiple Discord channels concurrently with error handling.
+    
+    :param message: The message content to send
+    :return: None
+    """
+    tasks = []
+    for channel_id in CHANNEL_IDS:
+        if channel_id not in failed_channels:
+            tasks.append(send_message(message, channel_id))
+    
+    # Wait for all messages to be sent
+    await asyncio.gather(*tasks, return_exceptions=True)
+
 def check_for_new_roles():
     """
-    The function `check_for_new_roles` compares new data with previous data to identify new roles and
-    deactivated roles, sending messages to specified channels accordingly.
+    The function checks for new roles and deactivated roles, sending appropriate messages to Discord channels.
     """
     print("Checking for new roles...")
     clone_or_update_repo()
@@ -174,14 +222,12 @@ def check_for_new_roles():
     # Handle new roles
     for role in new_roles:
         message = format_message(role)
-        for channel_id in CHANNEL_IDS:
-            bot.loop.create_task(send_message(message, channel_id))
+        bot.loop.create_task(send_messages_to_channels(message))
 
     # Handle deactivated roles
     for role in deactivated_roles:
         message = format_deactivation_message(role)
-        for channel_id in CHANNEL_IDS:
-            bot.loop.create_task(send_message(message, channel_id))
+        bot.loop.create_task(send_messages_to_channels(message))
 
     # Update previous data
     with open('previous_data.json', 'w') as file:
@@ -191,66 +237,27 @@ def check_for_new_roles():
     if not new_roles and not deactivated_roles:
         print("No updates found.")
 
-# Function to send message to Discord
-async def send_message(message, channel_id):
-    """
-    The function `send_message` sends a message to a Discord channel identified by the provided channel
-    ID, handling various exceptions that may occur during the process.
-    
-    :param message: The `message` parameter in the `send_message` function is the content of the message
-    that you want to send to a Discord channel. It should be a string containing the text you want to
-    send
-    :param channel_id: The `channel_id` parameter is the unique identifier for the channel where you
-    want to send the message. It is used to locate the specific channel within the Discord server
-    :return: The function `send_message` returns different messages based on the outcome of the message
-    sending process. Here are the possible return messages:
-    """
-    try:
-        print(f"Sending message to channel ID {channel_id}...")
-        channel = bot.get_channel(int(channel_id))
-        if channel is None:
-            print(f"Channel with ID {channel_id} not found in cache. Fetching channel...")
-            try:
-                channel = await bot.fetch_channel(int(channel_id))
-            except discord.NotFound:
-                print(f"Channel with ID {channel_id} not found.")
-                return
-            except discord.Forbidden:
-                print(f"Bot does not have permission to access channel with ID {channel_id}.")
-                return
-            except discord.HTTPException as e:
-                print(f"HTTP Exception while fetching channel: {e}")
-                return
-
-        await channel.send(message)
-        print(f"Message sent to channel ID {channel_id}.")
-    except Exception as e:
-        print(f"Error sending message to channel ID {channel_id}: {e}")
-
-# Schedule the job
-schedule.every(1).minutes.do(check_for_new_roles)
-
 @bot.event
 async def on_ready():
     """
-    The function prints a message when the bot is logged in and then continuously runs a schedule while
-    sleeping for 1 second in between.
+    Event handler for when the bot is ready and connected to Discord.
     """
     print(f'Logged in as {bot.user}')
     while True:
         schedule.run_pending()
         await asyncio.sleep(1)
 
+# Schedule the job
+schedule.every(1).minutes.do(check_for_new_roles)
+
 # Run the bot
-# This block of code is responsible for starting the Discord bot. It checks the conditions related to
-# the Discord token and channel ID to determine how to proceed with running the bot:
 print("Starting bot...")
-if DISCORD_TOKEN != '' and CHANNEL_ID != '':
+if DISCORD_TOKEN != '' and CHANNEL_IDS != '':
     bot.run(DISCORD_TOKEN)
-elif DISCORD_TOKEN == '' and CHANNEL_ID == '':
-    print("Please provide your Discord token and channel ID.")
-elif CHANNEL_ID == '':
-    print("Please provide your channel ID.")
+elif DISCORD_TOKEN == '' and CHANNEL_IDS == '':
+    print("Please provide your Discord token and channel IDs.")
+elif CHANNEL_IDS == '':
+    print("Please provide your channel IDs.")
 elif DISCORD_TOKEN == '':
     print("Please provide your Discord token.")
 else:
