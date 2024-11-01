@@ -1,257 +1,315 @@
+#!/usr/bin/env/python3
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import (
+    Dict,
+    List,
+    Optional,
+    Set,
+    # Tuple,
+    Any,
+)
+import asyncio
 import json
 import os
-import time
-from datetime import datetime
-import git
-import schedule
+from pathlib import Path
+
 import discord
-from discord.ext import tasks, commands
-import asyncio
+from discord.ext import commands, tasks
+import git
 
-# Constants
-REPO_URL = 'https://github.com/cvrve/Summer2025-Internships'
-LOCAL_REPO_PATH = 'Summer2025-Internships'
-JSON_FILE_PATH = os.path.join(LOCAL_REPO_PATH, '.github', 'scripts', 'listings.json')
-DISCORD_TOKEN = '' #! Your Discord token
-CHANNEL_IDS = '' #! Your channel IDs
+# import schedule
+from discord.abc import Messageable
+from discord.channel import TextChannel
 
-# Initialize Discord bot
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Function to clone or update the repository
-def clone_or_update_repo():
-    """
-    The function `clone_or_update_repo` clones a repository if it doesn't exist locally or updates it if
-    it already exists.
-    """
-    print("Cloning or updating repository...")
-    if os.path.exists(LOCAL_REPO_PATH):
-        try:
-            repo = git.Repo(LOCAL_REPO_PATH)
-            repo.remotes.origin.pull()
-            print("Repository updated.")
-        except git.exc.InvalidGitRepositoryError:
-            os.rmdir(LOCAL_REPO_PATH)  # Remove invalid directory
-            git.Repo.clone_from(REPO_URL, LOCAL_REPO_PATH)
+@dataclass
+class InternshipRole:
+    """Data class representing an internship role."""
+
+    title: str
+    company_name: str
+    locations: List[str]
+    url: str
+    season: str
+    sponsorship: str
+    active: bool
+    is_visible: bool
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "InternshipRole":
+        """Create an InternshipRole instance from a dictionary."""
+        return cls(
+            title=data["title"],
+            company_name=data["company_name"],
+            locations=data["locations"],
+            url=data["url"],
+            season=data["season"],
+            sponsorship=data["sponsorship"],
+            active=data["active"],
+            is_visible=data["is_visible"],
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the InternshipRole instance to a dictionary."""
+        return {
+            "title": self.title,
+            "company_name": self.company_name,
+            "locations": self.locations,
+            "url": self.url,
+            "season": self.season,
+            "sponsorship": self.sponsorship,
+            "active": self.active,
+            "is_visible": self.is_visible,
+        }
+
+
+class GitManager:
+    """Manages Git repository operations."""
+
+    def __init__(self, repo_url: str, local_path: str):
+        self.repo_url = repo_url
+        self.local_path = Path(local_path)
+
+    def clone_or_update(self) -> None:
+        """Clone or update the repository."""
+        print("Cloning or updating repository...")
+        if self.local_path.exists():
+            try:
+                repo = git.Repo(self.local_path)
+                repo.remotes.origin.pull()
+                print("Repository updated.")
+            except git.exc.InvalidGitRepositoryError:
+                self.local_path.rmdir()
+                git.Repo.clone_from(self.repo_url, self.local_path)
+                print("Repository cloned fresh.")
+        else:
+            git.Repo.clone_from(self.repo_url, self.local_path)
             print("Repository cloned fresh.")
-    else:
-        git.Repo.clone_from(REPO_URL, LOCAL_REPO_PATH)
-        print("Repository cloned fresh.")
 
-# Function to read JSON file
-def read_json():
-    """
-    The function `read_json()` reads a JSON file and returns the loaded data.
-    :return: The function `read_json` is returning the data loaded from the JSON file.
-    """
-    print(f"Reading JSON file from {JSON_FILE_PATH}...")
-    with open(JSON_FILE_PATH, 'r') as file:
-        data = json.load(file)
-    print(f"JSON file read successfully, {len(data)} items loaded.")
-    return data
 
-# Function to format the message
-def format_message(role):
-    """
-    The `format_message` function generates a formatted message for a new internship posting, including
-    details such as company name, role title, location, season, sponsorship, and posting date.
-    
-    :param role: The `format_message` function takes a dictionary `role` as input and generates a
-    formatted message containing information about a job role or internship. The function uses the
-    values from the `role` dictionary to fill in the template and create the message
-    :return: The `format_message` function returns a formatted message containing information about a
-    job role. The message includes details such as the company name, job title, job URL, locations,
-    season, sponsorship, and the date the job was posted. The message also includes a footer with a
-    reference to the team at cvrve.me.
-    """
+class MessageFormatter:
+    """Handles formatting of Discord messages."""
 
-    cvrve = 'cvrve'
-    location_str = ', '.join(role['locations']) if role['locations'] else 'Not specified'
-    return f"""
->>> # {role['company_name']} just posted a new internship!
+    @staticmethod
+    def format_new_role(role: InternshipRole) -> str:
+        """Format a message for a new internship posting."""
+        location_str = ", ".join(role.locations) if role.locations else "Not specified"
+        return f"""
+>>> # {role.company_name} just posted a new internship!
 
 ### Role:
-[{role['title']}]({role['url']})
+[{role.title}]({role.url})
 
 ### Location:
 {location_str}
 
 ### Season:
-{role['season']}
+{role.season}
 
-### Sponsorship: `{role['sponsorship']}`
+### Sponsorship: `{role.sponsorship}`
 ### Posted on: {datetime.now().strftime('%B, %d')}
-made by the team @ [{cvrve}](https://www.cvrve.me/)
+made by the team @ [cvrve](https://www.cvrve.me/)
 """
 
-# Function to compare roles and identify changes
-def compare_roles(old_role, new_role):
-    """
-    The function `compare_roles` compares two dictionaries representing roles and returns a list of
-    changes between them.
-    
-    :param old_role: I see that you have provided the function `compare_roles` which takes in two
-    parameters `old_role` and `new_role`. However, you have not provided the details or structure of the
-    `old_role` parameter. Could you please provide the details or structure of the `old_role` parameter
-    so
-    :param new_role: I see that you have defined a function `compare_roles` that takes in two parameters
-    `old_role` and `new_role`. The function compares the values of each key in the `new_role` dictionary
-    with the corresponding key in the `old_role` dictionary. If the values are different, it
-    :return: The `compare_roles` function returns a list of strings that represent the changes between
-    the `old_role` and `new_role` dictionaries. Each string in the list indicates a key that has changed
-    from its value in `old_role` to its value in `new_role`.
-    """
-    changes = []
-    for key in new_role:
-        if old_role.get(key) != new_role.get(key):
-            changes.append(f"{key} changed from {old_role.get(key)} to {new_role.get(key)}")
-    return changes
-
-
-def format_deactivation_message(role):
-    """
-    The function `format_deactivation_message` generates a message indicating that a specific internship
-    role is no longer active, including details such as the role title, status, deactivation date, and
-    company name.
-    
-    :param role: The `format_deactivation_message` function takes a `role` dictionary as a parameter.
-    The `role` dictionary should contain the following keys:
-    :return: The function `format_deactivation_message` returns a formatted deactivation message for a
-    given role. The message includes details such as the company name, role title, status, deactivation
-    date, and a reference to the team at cvrve.
-    """
-    cvrve = 'cvrve'
-    return f"""
->>> # {role['company_name']} internship is no longer active
+    @staticmethod
+    def format_deactivation(role: InternshipRole) -> str:
+        """Format a message for a deactivated internship role."""
+        return f"""
+>>> # {role.company_name} internship is no longer active
 
 ### Role:
-[{role['title']}]({role['url']})
+[{role.title}]({role.url})
 
 ### Status: `Inactive`
 ### Deactivated on: {datetime.now().strftime('%B, %d')}
-made by the team @ [{cvrve}](https://www.cvrve.me/)
+made by the team @ [cvrve](https://www.cvrve.me/)
 """
 
-# Function to check for new roles
-def check_for_new_roles():
-    """
-    The function `check_for_new_roles` compares new data with previous data to identify new roles and
-    deactivated roles, sending messages to specified channels accordingly.
-    """
-    print("Checking for new roles...")
-    clone_or_update_repo()
-    
-    new_data = read_json()
-    
-    # Compare with previous data if exists
-    if os.path.exists('previous_data.json'):
-        with open('previous_data.json', 'r') as file:
-            old_data = json.load(file)
-        print("Previous data loaded.")
-    else:
-        old_data = []
-        print("No previous data found.")
 
-    new_roles = []
-    deactivated_roles = []
+class InternshipBot(commands.Bot):
+    """Main Discord bot class for handling internship notifications."""
 
-    # Create a dictionary for quick lookup of old roles
-    old_roles_dict = {(role['title'], role['company_name']): role for role in old_data}
+    def __init__(
+        self,
+        repo_url: str,
+        local_repo_path: str,
+        json_file_path: str,
+        channel_ids: List[str],
+        command_prefix: str = "!",
+        max_retries: int = 3,
+    ):
+        intents = discord.Intents.default()
+        super().__init__(command_prefix=command_prefix, intents=intents)
 
-    for new_role in new_data:
-        old_role = old_roles_dict.get((new_role['title'], new_role['company_name']))
-        
-        if old_role:
-            # Check if the role was previously active and is now inactive
-            if old_role['active'] and not new_role['active']:
-                deactivated_roles.append(new_role)
-                print(f"Role {new_role['title']} at {new_role['company_name']} is now inactive.")
-        elif new_role['is_visible'] and new_role['active']:
-            new_roles.append(new_role)
-            print(f"New role found: {new_role['title']} at {new_role['company_name']}")
+        self.git_manager = GitManager(repo_url, local_repo_path)
+        self.json_file_path = Path(json_file_path)
+        self.channel_ids = channel_ids
+        self.max_retries = max_retries
 
-    # Handle new roles
-    for role in new_roles:
-        message = format_message(role)
-        for channel_id in CHANNEL_IDS:
-            bot.loop.create_task(send_message(message, channel_id))
+        self.failed_channels: Set[str] = set()
+        self.channel_failure_counts: Dict[str, int] = {}
+        self.formatter = MessageFormatter()
 
-    # Handle deactivated roles
-    for role in deactivated_roles:
-        message = format_deactivation_message(role)
-        for channel_id in CHANNEL_IDS:
-            bot.loop.create_task(send_message(message, channel_id))
+    async def setup_hook(self) -> None:
+        """Set up the bot's background tasks."""
+        self.check_roles.start()
 
-    # Update previous data
-    with open('previous_data.json', 'w') as file:
-        json.dump(new_data, file)
-    print("Updated previous data with new data.")
+    def read_json(self) -> List[InternshipRole]:
+        """Read and parse the JSON file containing internship data."""
+        print(f"Reading JSON file from {self.json_file_path}...")
+        with open(self.json_file_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        roles = [InternshipRole.from_dict(role_data) for role_data in data]
+        print(f"JSON file read successfully, {len(roles)} items loaded.")
+        return roles
 
-    if not new_roles and not deactivated_roles:
-        print("No updates found.")
+    async def send_message(self, message: str, channel_id: str) -> None:
+        """Send a message to a specific Discord channel with error handling."""
+        if channel_id in self.failed_channels:
+            print(f"Skipping previously failed channel ID {channel_id}")
+            return
 
-# Function to send message to Discord
-async def send_message(message, channel_id):
-    """
-    The function `send_message` sends a message to a Discord channel identified by the provided channel
-    ID, handling various exceptions that may occur during the process.
-    
-    :param message: The `message` parameter in the `send_message` function is the content of the message
-    that you want to send to a Discord channel. It should be a string containing the text you want to
-    send
-    :param channel_id: The `channel_id` parameter is the unique identifier for the channel where you
-    want to send the message. It is used to locate the specific channel within the Discord server
-    :return: The function `send_message` returns different messages based on the outcome of the message
-    sending process. Here are the possible return messages:
-    """
-    try:
-        print(f"Sending message to channel ID {channel_id}...")
-        channel = bot.get_channel(int(channel_id))
-        if channel is None:
-            print(f"Channel with ID {channel_id} not found in cache. Fetching channel...")
-            try:
-                channel = await bot.fetch_channel(int(channel_id))
-            except discord.NotFound:
-                print(f"Channel with ID {channel_id} not found.")
-                return
-            except discord.Forbidden:
-                print(f"Bot does not have permission to access channel with ID {channel_id}.")
-                return
-            except discord.HTTPException as e:
-                print(f"HTTP Exception while fetching channel: {e}")
-                return
+        try:
+            channel: Optional[Messageable] = self.get_channel(int(channel_id))
 
-        await channel.send(message)
-        print(f"Message sent to channel ID {channel_id}.")
-    except Exception as e:
-        print(f"Error sending message to channel ID {channel_id}: {e}")
+            if channel is None:
+                print(f"Channel {channel_id} not in cache, attempting to fetch...")
+                try:
+                    channel = await self.fetch_channel(int(channel_id))
+                except discord.NotFound:
+                    self._handle_channel_failure(channel_id, "Channel not found")
+                    return
+                except discord.Forbidden:
+                    self.failed_channels.add(channel_id)
+                    print(f"No permission for channel {channel_id}")
+                    return
 
-# Schedule the job
-schedule.every(1).minutes.do(check_for_new_roles)
+            if isinstance(channel, TextChannel):
+                await channel.send(message)
+                print(f"Successfully sent message to channel {channel_id}")
+                self.channel_failure_counts.pop(channel_id, None)
+                await asyncio.sleep(2)  # Rate limiting delay
+            else:
+                print(f"Channel {channel_id} is not a text channel")
+                self.failed_channels.add(channel_id)
 
-@bot.event
-async def on_ready():
-    """
-    The function prints a message when the bot is logged in and then continuously runs a schedule while
-    sleeping for 1 second in between.
-    """
-    print(f'Logged in as {bot.user}')
-    while True:
-        schedule.run_pending()
-        await asyncio.sleep(1)
+        except (
+            discord.HTTPException,
+            discord.InvalidArgument,
+            discord.Forbidden,
+            discord.NotFound,
+        ) as e:
+            self._handle_channel_failure(channel_id, str(e))
 
-# Run the bot
-# This block of code is responsible for starting the Discord bot. It checks the conditions related to
-# the Discord token and channel ID to determine how to proceed with running the bot:
-print("Starting bot...")
-if DISCORD_TOKEN != '' and CHANNEL_ID != '':
+    def _handle_channel_failure(self, channel_id: str, error: str) -> None:
+        """Handle channel failures and track retry attempts."""
+        print(f"Error with channel {channel_id}: {error}")
+        self.channel_failure_counts[channel_id] = (
+            self.channel_failure_counts.get(channel_id, 0) + 1
+        )
+        if self.channel_failure_counts[channel_id] >= self.max_retries:
+            print(
+                f"Channel {channel_id} has failed {self.max_retries} times, blacklisting"
+            )
+            self.failed_channels.add(channel_id)
+
+    async def send_messages_to_channels(self, message: str) -> None:
+        """Send a message to all configured channels concurrently."""
+        send_tasks = [
+            self.send_message(message, channel_id)
+            for channel_id in self.channel_ids
+            if channel_id not in self.failed_channels
+        ]
+        await asyncio.gather(*send_tasks, return_exceptions=True)
+
+    @tasks.loop(minutes=1)
+    async def check_roles(self) -> None:
+        """Check for new and deactivated roles periodically."""
+        print("Checking for new roles...")
+        self.git_manager.clone_or_update()
+
+        new_data = self.read_json()
+        previous_data_path = Path("previous_data.json")
+
+        if previous_data_path.exists():
+            with open(previous_data_path, "r", encoding="utf-8") as file:
+                old_data = [
+                    InternshipRole.from_dict(role_data) for role_data in json.load(file)
+                ]
+            print("Previous data loaded.")
+        else:
+            old_data = []
+            print("No previous data found.")
+
+        new_roles: List[InternshipRole] = []
+        deactivated_roles: List[InternshipRole] = []
+
+        old_roles_dict = {(role.title, role.company_name): role for role in old_data}
+
+        for new_role in new_data:
+            key = (new_role.title, new_role.company_name)
+            old_role = old_roles_dict.get(key)
+
+            if old_role:
+                if old_role.active and not new_role.active:
+                    deactivated_roles.append(new_role)
+                    print(
+                        f"Role {new_role.title} at {new_role.company_name} is now inactive."
+                    )
+            elif new_role.is_visible and new_role.active:
+                new_roles.append(new_role)
+                print(f"New role found: {new_role.title} at {new_role.company_name}")
+
+        # Handle new roles
+        for role in new_roles:
+            message = self.formatter.format_new_role(role)
+            await self.send_messages_to_channels(message)
+
+        # Handle deactivated roles
+        for role in deactivated_roles:
+            message = self.formatter.format_deactivation(role)
+            await self.send_messages_to_channels(message)
+
+        # Update previous data
+        with open(previous_data_path, "w", encoding="utf-8") as file:
+            json.dump([role.to_dict() for role in new_data], file)
+        print("Updated previous data with new data.")
+
+        if not new_roles and not deactivated_roles:
+            print("No updates found.")
+
+    @check_roles.before_loop
+    async def before_check_roles(self) -> None:
+        """Wait for the bot to be ready before starting the check_roles loop."""
+        await self.wait_until_ready()
+
+
+def main() -> None:
+    """Main entry point for the bot."""
+    # Configuration
+    REPO_URL = "https://github.com/cvrve/Summer2025-Internships"
+    LOCAL_REPO_PATH = "Summer2025-Internships"
+    JSON_FILE_PATH = os.path.join(
+        LOCAL_REPO_PATH, ".github", "scripts", "listings.json"
+    )
+    DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+    CHANNEL_IDS = os.environ.get("CHANNEL_IDS", "").split(",")
+
+    if not DISCORD_TOKEN or not CHANNEL_IDS:
+        print("Please provide Discord token and channel IDs via environment variables.")
+        return
+
+    bot = InternshipBot(
+        repo_url=REPO_URL,
+        local_repo_path=LOCAL_REPO_PATH,
+        json_file_path=JSON_FILE_PATH,
+        channel_ids=CHANNEL_IDS,
+    )
+
     bot.run(DISCORD_TOKEN)
-elif DISCORD_TOKEN == '' and CHANNEL_ID == '':
-    print("Please provide your Discord token and channel ID.")
-elif CHANNEL_ID == '':
-    print("Please provide your channel ID.")
-elif DISCORD_TOKEN == '':
-    print("Please provide your Discord token.")
-else:
-    print("An unknown error occurred.")
+
+
+if __name__ == "__main__":
+    main()
